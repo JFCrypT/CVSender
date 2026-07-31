@@ -354,7 +354,7 @@ La contraseña no se almacena en:
 
 ## Pausa entre envíos
 
-La pausa predeterminada es de diez segundos.
+La pausa predeterminada es de 15 segundos.
 
 Puede modificarse para una ejecución concreta:
 

@@ -167,8 +167,8 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--delay",
         type=float,
-        default=10.0,
-        help="Segundos de pausa entre envíos (predeterminado: 10)",
+        default=15.0,
+        help="Segundos de pausa entre envíos (predeterminado: 15)",
     )
     parser.add_argument(
         "--archive-dir",
