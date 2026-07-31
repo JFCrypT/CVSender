@@ -45,7 +45,9 @@ CVSender no busca empleos, no modifica el currículum y no redacta el contenido 
 - Mantiene un historial acumulativo en `envios.csv`.
 - Registra envíos correctos y errores.
 - Detecta direcciones duplicadas dentro del mismo CSV.
-- Permite configurar la pausa entre mensajes.
+- Aplica una pausa aleatoria configurable entre mensajes.
+- Reintenta una sola vez los fallos temporales después de una espera configurable.
+- Continúa con el resto del lote cuando un destinatario falla definitivamente.
 - No requiere paquetes externos de Python.
 - No requiere un entorno virtual.
 - No almacena la contraseña SMTP.
@@ -181,9 +183,7 @@ CVSender/
     ├── smtp.json
     ├── archivo_eml/
     │   ├── dry-run/
-    │   ├── pendientes/
-    │   ├── enviados/
-    │   └── errores/
+    │   └── enviados/
     └── envios.csv
 ```
 
@@ -308,7 +308,9 @@ python3 cvsender.py resultados.csv
 
 CVSender solicita la contraseña SMTP de forma oculta y envía todas las filas válidas, una por una.
 
-La pausa predeterminada entre mensajes es de **10 segundos**.
+La pausa predeterminada entre mensajes se elige aleatoriamente entre **7 y 15 segundos**.
+
+Cuando un envío falla por una condición temporal, CVSender espera **60 segundos**, cierra y vuelve a abrir la conexión SMTP y reintenta ese mensaje una sola vez.
 
 ### Contraseña de aplicación
 
@@ -354,21 +356,29 @@ La contraseña no se almacena en:
 
 ## Pausa entre envíos
 
-La pausa predeterminada es de 15 segundos.
+Después de cada destinatario procesado, CVSender elige una pausa aleatoria nueva dentro de este intervalo predeterminado:
 
-Puede modificarse para una ejecución concreta:
-
-```bash
-python3 cvsender.py resultados.csv --delay 20
+```text
+7 a 15 segundos
 ```
 
-Sin pausa:
+El intervalo puede modificarse para una ejecución concreta:
 
 ```bash
-python3 cvsender.py resultados.csv --delay 0
+python3 cvsender.py resultados.csv \
+  --delay-min 10 \
+  --delay-max 20
 ```
 
-Una pausa mayor puede reducir rechazos temporales cuando se envían numerosos mensajes semejantes o varios destinatarios pertenecen al mismo dominio.
+Para desactivar la pausa aleatoria:
+
+```bash
+python3 cvsender.py resultados.csv \
+  --delay-min 0 \
+  --delay-max 0
+```
+
+El valor mínimo no puede ser mayor que el máximo. La variación aleatoria evita una periodicidad rígida y puede reducir rechazos temporales cuando se envían numerosos mensajes semejantes.
 
 ---
 
@@ -398,8 +408,11 @@ El registro conserva:
 Estados posibles:
 
 - `GENERADO`: creado mediante `--dry-run`, sin envío SMTP.
-- `ENVIADO`: aceptado por el servidor SMTP.
-- `ERROR`: no pudo generarse o enviarse.
+- `ENVIADO`: aceptado por el servidor SMTP en el primer intento.
+- `ENVIADO_TRAS_REINTENTO`: aceptado después de un fallo temporal y un único reintento.
+- `ERROR`: no pudo generarse o enviarse definitivamente.
+
+El formato y el encabezado de `envios.csv` son compatibles con las versiones anteriores de CVSender. Los historiales existentes pueden conservarse: la nueva versión continúa agregando filas al mismo archivo.
 
 `envios.csv` contiene toda la información de `resultados.csv` y agrega los datos operativos del procesamiento. Por ello, puede utilizarse como histórico principal.
 
@@ -418,9 +431,11 @@ CVSender_state/archivo_eml/
 Subcarpetas:
 
 - `dry-run/`: mensajes creados sin envío.
-- `pendientes/`: mensajes preparados antes del intento SMTP.
-- `enviados/`: mensajes aceptados por SMTP.
-- `errores/`: mensajes cuyo envío falló.
+- `enviados/`: mensajes aceptados por SMTP, tanto en el primer intento como después del reintento.
+
+Los mensajes que terminan con estado `ERROR` no generan una copia permanente `.eml`; el detalle completo queda registrado en `envios.csv`.
+
+Las carpetas `pendientes/` y `errores/` utilizadas por versiones anteriores ya no forman parte del flujo. Si permanecen en una instalación existente, pueden conservarse como histórico o eliminarse manualmente después de revisar su contenido. CVSender no las elimina automáticamente para evitar pérdida de datos.
 
 CVSender no escribe directamente en los archivos internos de Thunderbird.
 
@@ -464,30 +479,38 @@ La detección de duplicados se aplica al CSV de la ejecución actual. No impide 
 
 ## Reintento de errores
 
-Un error individual no detiene las filas restantes.
+CVSender distingue entre fallos temporales y fallos permanentes.
 
-El procedimiento recomendado es:
+Ante un fallo temporal:
 
-1. Revisar `CVSender_state/envios.csv`.
-2. Identificar las filas con estado `ERROR`.
-3. Crear manualmente un CSV nuevo que contenga únicamente esas filas.
-4. Esperar un intervalo razonable.
-5. Reenviar solo el CSV reducido.
+1. Cierra la conexión SMTP actual.
+2. Espera 60 segundos.
+3. Abre una conexión SMTP nueva.
+4. Reintenta el mismo mensaje una sola vez.
+5. Continúa con el resto del lote usando nuevamente pausas aleatorias entre 7 y 15 segundos.
 
-Ejemplo:
+Se consideran reintentables, entre otros:
+
+- Respuestas SMTP `4xx`.
+- Timeout o desconexión del servidor.
+- Errores de socket o conexión temporal.
+- La respuesta de Yahoo `554 6.6.0`, observada como temporal en envíos consecutivos.
+
+No se reintentan automáticamente los errores permanentes, como destinatarios inexistentes, direcciones inválidas o rechazos definitivos de política. Los errores de autenticación o configuración SMTP detienen la ejecución completa.
+
+La espera puede modificarse:
+
+```bash
+python3 cvsender.py resultados.csv --retry-wait 120
+```
+
+Si el reintento también falla, el destinatario queda registrado con estado `ERROR` y CVSender continúa con la siguiente fila. Después puede crearse manualmente un CSV reducido con los fallidos:
 
 ```bash
 python3 cvsender.py resultados_reintento.csv
 ```
 
 No debe repetirse el CSV completo si parte de sus destinatarios ya fue enviada correctamente, porque esos mensajes se enviarían nuevamente.
-
-El historial conservará ambos eventos:
-
-```text
-primer intento  → ERROR
-segundo intento → ENVIADO
-```
 
 ---
 
@@ -498,6 +521,19 @@ cd "/ruta/a/CVSender"
 
 python3 cvsender.py --help
 ```
+
+### Control de pausas y reintentos
+
+```bash
+python3 cvsender.py resultados.csv \
+  --delay-min 7 \
+  --delay-max 15 \
+  --retry-wait 60
+```
+
+- `--delay-min`: pausa aleatoria mínima entre destinatarios.
+- `--delay-max`: pausa aleatoria máxima entre destinatarios.
+- `--retry-wait`: espera antes del único reintento de un fallo temporal.
 
 ### Sobrescribir la configuración SMTP
 
@@ -532,12 +568,13 @@ Este modo puede mostrar metadatos de la conversación SMTP, pero no muestra la c
 ## Comportamiento ante errores
 
 - Un CSV inválido cancela la ejecución antes del primer envío.
-- Cada mensaje se archiva antes del intento SMTP.
 - Un error individual no detiene las filas restantes.
-- Los mensajes aceptados por SMTP se mueven a `enviados`.
-- Los mensajes rechazados se mueven a `errores`.
-- El proceso devuelve un código distinto de cero cuando existe al menos un error.
-- CVSender no reintenta automáticamente los mensajes rechazados.
+- Un fallo temporal espera 60 segundos y se reintenta una sola vez con una conexión SMTP nueva.
+- Un fallo permanente no se reintenta automáticamente.
+- Un error de autenticación o configuración SMTP detiene la ejecución completa.
+- Los mensajes aceptados por SMTP se archivan en `enviados/`.
+- Los fallos definitivos se registran en `envios.csv` sin crear carpetas `pendientes/` o `errores/`.
+- El proceso devuelve un código distinto de cero cuando existe al menos un error definitivo.
 
 ---
 
@@ -585,7 +622,7 @@ No deben quedar preparados para commit:
 - No reemplaza automáticamente los archivos adjuntos definidos en la plantilla.
 - No guarda por sí mismo los mensajes en la carpeta `Sent` de Thunderbird.
 - No reutiliza los tokens OAuth2 de Thunderbird.
-- No reintenta automáticamente los errores.
+- Realiza como máximo un reintento automático por destinatario.
 - No evita duplicados comparando contra el historial completo.
 - El envío depende de que el proveedor admita autenticación SMTP compatible.
 

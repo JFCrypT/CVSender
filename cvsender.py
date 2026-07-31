@@ -22,6 +22,7 @@ import hashlib
 import json
 import mailbox
 import os
+import random
 import re
 import shutil
 import smtplib
@@ -165,10 +166,27 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         help="Genera y archiva los .eml, pero no conecta al servidor SMTP",
     )
     parser.add_argument(
-        "--delay",
+        "--delay-min",
+        type=float,
+        default=7.0,
+        help="Pausa mínima aleatoria entre envíos, en segundos (predeterminado: 7)",
+    )
+    parser.add_argument(
+        "--delay-max",
         type=float,
         default=15.0,
-        help="Segundos de pausa entre envíos (predeterminado: 15)",
+        help="Pausa máxima aleatoria entre envíos, en segundos (predeterminado: 15)",
+    )
+    parser.add_argument(
+        "--retry-wait",
+        type=float,
+        default=60.0,
+        help="Espera antes del único reintento de un fallo temporal (predeterminado: 60)",
+    )
+    parser.add_argument(
+        "--delay",
+        type=float,
+        help=argparse.SUPPRESS,
     )
     parser.add_argument(
         "--archive-dir",
@@ -217,8 +235,19 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         parser.error("debe indicar un CSV o usar --preparar")
     if args.preparar and args.csv is not None:
         parser.error("--preparar no debe combinarse con un CSV")
-    if args.delay < 0:
-        parser.error("--delay no puede ser negativo")
+    if args.delay is not None:
+        if args.delay < 0:
+            parser.error("--delay no puede ser negativo")
+        args.delay_min = args.delay
+        args.delay_max = args.delay
+    if args.delay_min < 0:
+        parser.error("--delay-min no puede ser negativo")
+    if args.delay_max < 0:
+        parser.error("--delay-max no puede ser negativo")
+    if args.delay_min > args.delay_max:
+        parser.error("--delay-min no puede ser mayor que --delay-max")
+    if args.retry_wait < 0:
+        parser.error("--retry-wait no puede ser negativo")
     return args
 
 
@@ -903,13 +932,6 @@ def archive_message(
     return path
 
 
-def move_archive(path: Path, archive_root: Path, category: str) -> Path:
-    day = path.parent.name
-    destination_dir = archive_root.expanduser() / category / day
-    destination_dir.mkdir(parents=True, exist_ok=True)
-    destination = destination_dir / path.name
-    return Path(shutil.move(str(path), str(destination)))
-
 
 def append_log(
     log_path: Path,
@@ -948,6 +970,98 @@ def append_log(
         if new_file:
             writer.writeheader()
         writer.writerow(row)
+
+
+def exception_detail(exc: BaseException) -> str:
+    """Devuelve una descripción estable y útil del error SMTP o de red."""
+    if isinstance(exc, smtplib.SMTPRecipientsRefused):
+        parts: list[str] = []
+        for recipient, response in exc.recipients.items():
+            code, message = response
+            decoded = (
+                message.decode("utf-8", errors="replace")
+                if isinstance(message, bytes)
+                else str(message)
+            )
+            parts.append(f"{recipient}: {code} {decoded}")
+        return f"{type(exc).__name__}: " + "; ".join(parts)
+
+    if isinstance(exc, smtplib.SMTPResponseException):
+        message = exc.smtp_error
+        decoded = (
+            message.decode("utf-8", errors="replace")
+            if isinstance(message, bytes)
+            else str(message)
+        )
+        return f"{type(exc).__name__}: {exc.smtp_code} {decoded}"
+
+    return f"{type(exc).__name__}: {exc}"
+
+
+def smtp_response_codes(exc: BaseException) -> list[int]:
+    if isinstance(exc, smtplib.SMTPRecipientsRefused):
+        return [int(response[0]) for response in exc.recipients.values()]
+    if isinstance(exc, smtplib.SMTPResponseException):
+        return [int(exc.smtp_code)]
+    return []
+
+
+def is_fatal_smtp_error(exc: BaseException) -> bool:
+    """Errores que hacen inútil continuar con el lote completo."""
+    return isinstance(
+        exc,
+        (
+            AppError,
+            smtplib.SMTPAuthenticationError,
+            smtplib.SMTPNotSupportedError,
+        ),
+    )
+
+
+def is_retryable_send_error(exc: BaseException) -> bool:
+    """Clasifica fallos temporales que admiten un único reintento."""
+    if is_fatal_smtp_error(exc):
+        return False
+
+    if isinstance(
+        exc,
+        (
+            TimeoutError,
+            ConnectionError,
+            BrokenPipeError,
+            smtplib.SMTPServerDisconnected,
+        ),
+    ):
+        return True
+
+    codes = smtp_response_codes(exc)
+    if codes and all(400 <= code < 500 for code in codes):
+        return True
+
+    if isinstance(exc, smtplib.SMTPResponseException):
+        message = exc.smtp_error
+        decoded = (
+            message.decode("utf-8", errors="replace")
+            if isinstance(message, bytes)
+            else str(message)
+        )
+        if exc.smtp_code == 554 and "6.6.0" in decoded:
+            return True
+
+    # SMTPException hereda de OSError: no debe convertir todos los 5xx en temporales.
+    if isinstance(exc, smtplib.SMTPException):
+        return False
+
+    # OSError restante cubre fallos de socket, conexión reseteada y red temporal.
+    return isinstance(exc, OSError)
+
+
+def sleep_random_interval(minimum: float, maximum: float) -> float:
+    duration = random.uniform(minimum, maximum)
+    if duration > 0:
+        print(f"Pausa aleatoria: {duration:.1f} s")
+        time.sleep(duration)
+    return duration
 
 
 class SmtpConnection:
@@ -1025,13 +1139,7 @@ class SmtpConnection:
             self.connect()
         assert self.client is not None
         sender = sender_from_message(message)
-        try:
-            self.client.send_message(message, from_addr=sender, to_addrs=[recipient])
-        except smtplib.SMTPServerDisconnected:
-            self.close()
-            self.connect()
-            assert self.client is not None
-            self.client.send_message(message, from_addr=sender, to_addrs=[recipient])
+        self.client.send_message(message, from_addr=sender, to_addrs=[recipient])
 
     def __enter__(self) -> "SmtpConnection":
         self.connect()
@@ -1099,6 +1207,11 @@ def send_entries(args: argparse.Namespace) -> int:
         password = get_smtp_password(smtp, args.smtp_password_env)
         connection = SmtpConnection(smtp, password, args.timeout, args.debug_smtp)
         print(f"SMTP: {smtp.host}:{smtp.port} ({smtp.security})")
+        print(
+            "Pausa entre mensajes: "
+            f"aleatoria entre {args.delay_min:g} y {args.delay_max:g} segundos"
+        )
+        print(f"Espera antes de reintento temporal: {args.retry_wait:g} segundos")
     else:
         print("Modo dry-run: no se establecerá conexión SMTP.")
 
@@ -1115,7 +1228,6 @@ def send_entries(args: argparse.Namespace) -> int:
             template = templates[entry.idioma_recomendado]
             subject = TEMPLATE_SUBJECTS[entry.idioma_recomendado]
             message = build_message(template, entry.correo)
-            eml_path: Path | None = None
 
             if args.dry_run:
                 try:
@@ -1134,47 +1246,93 @@ def send_entries(args: argparse.Namespace) -> int:
                     print(f"[{index}/{len(entries)}] GENERADO: {entry.correo} ← {subject}")
                 except OSError as exc:
                     failures += 1
-                    detail = f"{type(exc).__name__}: {exc}"
-                    append_log(args.log, entry, subject, "ERROR", detail, eml_path)
+                    detail = exception_detail(exc)
+                    append_log(args.log, entry, subject, "ERROR", detail, None)
                     eprint(f"[{index}/{len(entries)}] ERROR: {entry.correo}: {exc}")
-            else:
+                continue
+
+            assert connection is not None
+            first_error: BaseException | None = None
+            final_status = "ENVIADO"
+            final_detail = "SMTP aceptó el mensaje"
+            sent = False
+
+            try:
+                connection.send(message, entry.correo)
+                sent = True
+            except (smtplib.SMTPException, OSError, AppError) as exc:
+                first_error = exc
+                if is_fatal_smtp_error(exc):
+                    raise AppError(
+                        f"Fallo SMTP fatal durante el envío a {entry.correo}: "
+                        f"{exception_detail(exc)}"
+                    ) from exc
+
+                connection.close()
+                if is_retryable_send_error(exc):
+                    print(
+                        f"[{index}/{len(entries)}] FALLO TEMPORAL: {entry.correo}: "
+                        f"{exception_detail(exc)}"
+                    )
+                    if args.retry_wait > 0:
+                        print(f"Esperando {args.retry_wait:g} s antes del único reintento...")
+                        time.sleep(args.retry_wait)
+
+                    try:
+                        connection.connect()
+                        connection.send(message, entry.correo)
+                        sent = True
+                        final_status = "ENVIADO_TRAS_REINTENTO"
+                        final_detail = (
+                            f"Primer intento: {exception_detail(first_error)}. "
+                            "Reintento: SMTP aceptó el mensaje"
+                        )
+                    except (smtplib.SMTPException, OSError, AppError) as retry_exc:
+                        connection.close()
+                        if is_fatal_smtp_error(retry_exc):
+                            raise AppError(
+                                f"Fallo SMTP fatal al reconectar o reintentar {entry.correo}: "
+                                f"{exception_detail(retry_exc)}"
+                            ) from retry_exc
+                        final_detail = (
+                            f"Primer intento: {exception_detail(first_error)}. "
+                            f"Reintento tras {args.retry_wait:g} segundos: "
+                            f"{exception_detail(retry_exc)}"
+                        )
+                else:
+                    final_detail = (
+                        f"Fallo permanente o no reintentable: {exception_detail(exc)}"
+                    )
+
+            if sent:
+                eml_path: Path | None = None
                 try:
                     eml_path = archive_message(
-                        message, entry, args.archive_dir, category="pendientes"
+                        message, entry, args.archive_dir, category="enviados"
                     )
                 except OSError as exc:
-                    failures += 1
-                    detail = f"No se pudo archivar el mensaje antes del envío: {exc}"
-                    append_log(args.log, entry, subject, "ERROR", detail, None)
-                    eprint(f"[{index}/{len(entries)}] ERROR: {entry.correo}: {detail}")
-                    if index < len(entries) and args.delay:
-                        time.sleep(args.delay)
-                    continue
+                    final_detail += f"; no se pudo archivar el EML: {exc}"
 
-                try:
-                    assert connection is not None
-                    connection.send(message, entry.correo)
-                except (smtplib.SMTPException, OSError, AppError) as exc:
-                    failures += 1
-                    try:
-                        eml_path = move_archive(eml_path, args.archive_dir, "errores")
-                    except OSError:
-                        pass
-                    detail = f"{type(exc).__name__}: {exc}"
-                    append_log(args.log, entry, subject, "ERROR", detail, eml_path)
-                    eprint(f"[{index}/{len(entries)}] ERROR: {entry.correo}: {exc}")
-                else:
-                    detail = "SMTP aceptó el mensaje"
-                    try:
-                        eml_path = move_archive(eml_path, args.archive_dir, "enviados")
-                    except OSError as exc:
-                        detail += f"; no se pudo mover el archivo EML: {exc}"
-                    append_log(args.log, entry, subject, "ENVIADO", detail, eml_path)
-                    success += 1
-                    print(f"[{index}/{len(entries)}] ENVIADO: {entry.correo} ← {subject}")
+                append_log(
+                    args.log,
+                    entry,
+                    subject,
+                    final_status,
+                    final_detail,
+                    eml_path,
+                )
+                success += 1
+                print(
+                    f"[{index}/{len(entries)}] {final_status}: "
+                    f"{entry.correo} ← {subject}"
+                )
+            else:
+                append_log(args.log, entry, subject, "ERROR", final_detail, None)
+                failures += 1
+                eprint(f"[{index}/{len(entries)}] ERROR: {entry.correo}: {final_detail}")
 
-            if index < len(entries) and args.delay:
-                time.sleep(args.delay)
+            if index < len(entries):
+                sleep_random_interval(args.delay_min, args.delay_max)
     finally:
         if connection is not None:
             connection.close()

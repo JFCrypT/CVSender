@@ -1,0 +1,10 @@
+{
+  "sender_email": "jfcastrotramontina@yahoo.com",
+  "host": "smtp.mail.yahoo.com",
+  "port": 465,
+  "security": "ssl",
+  "username": "jfcastrotramontina@yahoo.com",
+  "auth_method": 10,
+  "smtp_key": "smtp1",
+  "profile_path": "/home/jfcrypt/snap/thunderbird/common/.thunderbird/7bw87f2q.default"
+}
