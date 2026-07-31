@@ -48,7 +48,7 @@ CVSender no busca empleos, no modifica el currículum y no redacta el contenido 
 - Permite configurar la pausa entre mensajes.
 - No requiere paquetes externos de Python.
 - No requiere un entorno virtual.
-- No guarda la contraseña SMTP.
+- No almacena la contraseña SMTP.
 
 ---
 
@@ -119,7 +119,7 @@ El prompt está diseñado para utilizarse en un asistente con capacidad de búsq
 2. Un bloque CSV UTF-8 que refleja exactamente esa tabla.
 3. Los valores normalizados de `idioma_recomendado` que CVSender utiliza para seleccionar la plantilla de Thunderbird.
 
-El archivo generado debe guardarse dentro de la carpeta del proyecto, por ejemplo:
+El archivo generado debe guardarse en la raíz del proyecto, por ejemplo:
 
 ```text
 /ruta/a/CVSender/resultados.csv
@@ -172,21 +172,22 @@ CVSender/
 CVSender guarda su estado operativo dentro de la carpeta del proyecto:
 
 ```text
-/ruta/a/CVSender/CVSender_state/
-├── plantillas/
-│   ├── ingles.eml
-│   ├── espanol-industrial.eml
-│   └── espanol-academico.eml
-├── smtp.json
-├── archivo_eml/
-│   ├── dry-run/
-│   ├── pendientes/
-│   ├── enviados/
-│   └── errores/
-└── envios.csv
+CVSender/
+└── CVSender_state/
+    ├── plantillas/
+    │   ├── ingles.eml
+    │   ├── espanol-industrial.eml
+    │   └── espanol-academico.eml
+    ├── smtp.json
+    ├── archivo_eml/
+    │   ├── dry-run/
+    │   ├── pendientes/
+    │   ├── enviados/
+    │   └── errores/
+    └── envios.csv
 ```
 
-El archivo `.gitignore` excluye:
+El archivo `.gitignore` debe excluir:
 
 - `CVSender_state/`.
 - La configuración local.
@@ -200,17 +201,19 @@ El archivo `.gitignore` excluye:
 
 Se conserva únicamente `resultados_ejemplo.csv`.
 
+> `CVSender_state/smtp.json` puede contener datos locales del perfil y del servidor SMTP. Debe permanecer excluido del repositorio.
+
 ---
 
 ## Ubicación local del proyecto
 
-La ubicación prevista es:
+Clone o copie el repositorio en cualquier ubicación local, por ejemplo:
 
 ```text
 /ruta/a/CVSender/
 ```
 
-Todos los comandos de este README parten de esa carpeta:
+Entre en la raíz del proyecto:
 
 ```bash
 cd "/ruta/a/CVSender"
@@ -288,7 +291,7 @@ Este modo:
 Los mensajes generados quedan en:
 
 ```text
-/ruta/a/CVSender/CVSender_state/archivo_eml/dry-run/
+CVSender_state/archivo_eml/dry-run/
 ```
 
 El estado `GENERADO` significa que el mensaje fue construido y archivado correctamente, pero no enviado.
@@ -318,17 +321,25 @@ Una contraseña de aplicación:
 - Permanece válida hasta que sea revocada o invalidada por el proveedor.
 - No debe guardarse en el repositorio.
 
+La opción recomendada es introducirla cuando CVSender la solicite, porque el ingreso es oculto y no queda escrito en el código, el CSV ni el historial.
+
 ### Contraseña mediante variable de entorno
+
+También puede proporcionarse temporalmente mediante una variable de entorno sin escribirla directamente en la línea de comandos:
 
 ```bash
 cd "/ruta/a/CVSender"
 
-export CVSENDER_SMTP_PASSWORD='CONTRASEÑA_O_CONTRASEÑA_DE_APLICACIÓN'
+read -rsp "Contraseña SMTP o de aplicación: " CVSENDER_SMTP_PASSWORD
+echo
+export CVSENDER_SMTP_PASSWORD
+
 python3 cvsender.py resultados.csv
+
 unset CVSENDER_SMTP_PASSWORD
 ```
 
-La contraseña no se guarda en:
+La contraseña no se almacena en:
 
 - El código.
 - El CSV de entrada.
@@ -336,6 +347,8 @@ La contraseña no se guarda en:
 - Los archivos `.eml`.
 - `smtp.json`.
 - El registro histórico.
+
+> Evite escribir la contraseña directamente en un comando `export`, porque podría quedar registrada en el historial de la shell.
 
 ---
 
@@ -364,7 +377,7 @@ Una pausa mayor puede reducir rechazos temporales cuando se envían numerosos me
 Cada ejecución agrega información a:
 
 ```text
-/ruta/a/CVSender/CVSender_state/envios.csv
+CVSender_state/envios.csv
 ```
 
 `envios.csv` funciona como historial acumulativo: no se reemplaza en cada ejecución. Las nuevas filas se agregan al final.
@@ -512,6 +525,8 @@ python3 cvsender.py resultados.csv --debug-smtp
 
 Este modo puede mostrar metadatos de la conversación SMTP, pero no muestra la contraseña.
 
+> El modo de diagnóstico puede exponer direcciones, dominios y respuestas del servidor en la terminal. No publique su salida sin revisarla.
+
 ---
 
 ## Comportamiento ante errores
@@ -535,14 +550,29 @@ CVSender:
 - Lee el perfil mediante instantáneas temporales de solo lectura.
 - No extrae contraseñas guardadas en Thunderbird.
 - No extrae tokens OAuth2.
-- No guarda credenciales.
+- No almacena credenciales.
 - No modifica las plantillas originales.
 - No envía mensajes en copia masiva.
 - No agrega destinatarios adicionales.
 - No depende de APIs laborales externas.
 - Utiliza únicamente la biblioteca estándar de Python.
 
-Los archivos sensibles y operativos se encuentran bajo `CVSender_state/`, que está excluido mediante `.gitignore`.
+Los archivos sensibles y operativos se encuentran bajo `CVSender_state/`, que debe permanecer excluido mediante `.gitignore`.
+
+Antes de publicar cambios, verifique:
+
+```bash
+git status --ignored
+```
+
+No deben quedar preparados para commit:
+
+- `CVSender_state/`.
+- `resultados.csv` u otros CSV reales.
+- Archivos `.env`.
+- Archivos `.eml`.
+- Configuración de Visual Studio Code.
+- Salidas de diagnóstico con datos personales.
 
 ---
 
