@@ -106,6 +106,7 @@ Todas las filas válidas se procesan. No existe una columna de autorización.
 - Python 3.11 o posterior.
 - Thunderbird configurado.
 - Las tres plantillas guardadas en Thunderbird.
+- Thunderbird puede permanecer abierto durante la preparación y los envíos.
 - Acceso SMTP a la cuenta remitente.
 - Contraseña SMTP o contraseña de aplicación compatible.
 
@@ -123,10 +124,10 @@ CVSender/
 └── .gitignore
 ```
 
-CVSender crea su estado operativo fuera del repositorio:
+CVSender guarda todo su estado operativo dentro de la carpeta del proyecto:
 
 ```text
-~/.local/share/CVSender/
+/home/jfcrypt/Documents/Proyectos/CVSender/CVSender_state/
 ├── plantillas/
 │   ├── ingles.eml
 │   ├── espanol-industrial.eml
@@ -139,6 +140,8 @@ CVSender crea su estado operativo fuera del repositorio:
 │   └── errores/
 └── envios.csv
 ```
+
+El archivo `.gitignore` excluye `CVSender_state/`, la configuración local, los espacios de trabajo de Visual Studio Code y todos los CSV generados, excepto `resultados_ejemplo.csv`. Por lo tanto, la configuración SMTP, las copias locales de las plantillas, los mensajes `.eml`, el historial de envíos y los resultados reales no se publican en GitHub.
 
 ---
 
@@ -156,11 +159,13 @@ Todos los comandos de este README parten de esa carpeta:
 cd "/home/jfcrypt/Documents/Proyectos/CVSender"
 ```
 
+Todos los archivos generados por la aplicación permanecen dentro de esa carpeta, bajo `CVSender_state/`. CVSender no utiliza `~/.local/share/` ni otra ubicación externa al proyecto.
+
 ---
 
 ## Preparación inicial
 
-Cierre Thunderbird completamente y ejecute:
+Thunderbird puede permanecer abierto. Ejecute:
 
 ```bash
 cd "/home/jfcrypt/Documents/Proyectos/CVSender"
@@ -171,14 +176,17 @@ python3 cvsender.py --preparar
 Durante esta preparación, CVSender:
 
 1. Detecta el perfil activo de Thunderbird.
-2. Busca la carpeta `Templates` o `Plantillas`.
-3. Localiza las tres plantillas por su asunto exacto.
-4. Verifica que cada plantilla tenga al menos un PDF adjunto.
-5. Copia las plantillas al directorio local de CVSender.
-6. Lee la configuración SMTP del perfil.
-7. Guarda la configuración SMTP sin almacenar contraseñas.
+2. Localiza la carpeta `Templates` o `Plantillas`.
+3. Crea dentro de `CVSender_state/` una instantánea temporal de solo lectura.
+4. Si Thunderbird modifica el almacén mientras se copia, descarta la copia y vuelve a intentarlo.
+5. Localiza las tres plantillas por su asunto exacto.
+6. Verifica que cada plantilla tenga al menos un PDF adjunto.
+7. Copia las plantillas definitivas a `CVSender_state/plantillas/`.
+8. Lee la configuración SMTP del perfil mediante una lectura estable.
+9. Guarda la configuración SMTP sin almacenar contraseñas.
+10. Elimina la instantánea temporal.
 
-La preparación debe repetirse cuando se modifique una plantilla o cambie la configuración SMTP.
+CVSender no bloquea, modifica ni cierra Thunderbird. La preparación debe repetirse cuando se modifique una plantilla o cambie la configuración SMTP.
 
 ### Perfil o carpeta de plantillas manual
 
@@ -190,7 +198,7 @@ python3 cvsender.py --preparar \
   --templates-path "/ruta/al/archivo/Templates"
 ```
 
-Una vez terminada la preparación, Thunderbird puede volver a abrirse.
+Thunderbird puede seguir utilizándose durante y después de la preparación.
 
 ---
 
@@ -215,7 +223,7 @@ Este modo:
 Los mensajes generados quedan en:
 
 ```text
-~/.local/share/CVSender/archivo_eml/dry-run/
+/home/jfcrypt/Documents/Proyectos/CVSender/CVSender_state/archivo_eml/dry-run/
 ```
 
 ---
@@ -255,7 +263,7 @@ La contraseña no se guarda en:
 Cada ejecución agrega información a:
 
 ```text
-~/.local/share/CVSender/envios.csv
+/home/jfcrypt/Documents/Proyectos/CVSender/CVSender_state/envios.csv
 ```
 
 El registro conserva:
@@ -321,7 +329,7 @@ python3 cvsender.py --help
 
 ### Modificar la pausa entre envíos
 
-La pausa predeterminada es de tres segundos.
+La pausa predeterminada es de 10 segundos.
 
 ```bash
 python3 cvsender.py resultados.csv --delay 5
@@ -359,12 +367,6 @@ python3 cvsender.py resultados.csv --debug-smtp
 
 Este modo puede mostrar metadatos de la conversación SMTP. No muestra la contraseña.
 
-### Directorio de estado personalizado
-
-```bash
-export CVSENDER_STATE_DIR="$HOME/.local/share/CVSender"
-```
-
 ---
 
 ## Comportamiento ante errores
@@ -383,6 +385,8 @@ export CVSENDER_STATE_DIR="$HOME/.local/share/CVSender"
 CVSender:
 
 - No intenta controlar gráficamente Thunderbird.
+- No exige cerrar Thunderbird.
+- Lee el perfil mediante instantáneas temporales de solo lectura.
 - No extrae contraseñas guardadas en Thunderbird.
 - No guarda credenciales.
 - No modifica las plantillas originales.

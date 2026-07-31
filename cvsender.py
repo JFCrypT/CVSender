@@ -2,7 +2,7 @@
 """Envía CV por correo usando plantillas guardadas en Thunderbird.
 
 Flujo:
-  1. Preparar una vez (Thunderbird cerrado):
+  1. Preparar o actualizar las plantillas (Thunderbird puede permanecer abierto):
        python3 cvsender.py --preparar
   2. Probar sin enviar:
        python3 cvsender.py resultados.csv --dry-run
@@ -40,7 +40,8 @@ from pathlib import Path
 from typing import Any, Iterable, Iterator, Sequence
 
 APP_NAME = "CVSender"
-STATE_DIR = Path(os.environ.get("CVSENDER_STATE_DIR", "~/.local/share/CVSender")).expanduser()
+PROJECT_DIR = Path(__file__).resolve().parent
+STATE_DIR = PROJECT_DIR / "CVSender_state"
 TEMPLATES_DIR = STATE_DIR / "plantillas"
 SMTP_STATE_FILE = STATE_DIR / "smtp.json"
 DEFAULT_ARCHIVE_DIR = STATE_DIR / "archivo_eml"
@@ -143,7 +144,10 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--preparar",
         action="store_true",
-        help="Extrae/actualiza las plantillas y la configuración SMTP desde Thunderbird",
+        help=(
+            "Extrae/actualiza las plantillas y la configuración SMTP desde Thunderbird "
+            "mediante una copia de solo lectura; Thunderbird puede permanecer abierto"
+        ),
     )
     parser.add_argument(
         "--profile",
@@ -163,8 +167,8 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--delay",
         type=float,
-        default=3.0,
-        help="Segundos de pausa entre envíos (predeterminado: 3)",
+        default=10.0,
+        help="Segundos de pausa entre envíos (predeterminado: 10)",
     )
     parser.add_argument(
         "--archive-dir",
@@ -300,11 +304,37 @@ def discover_thunderbird_profile(explicit: Path | None = None) -> Path:
     return found[0][2]
 
 
+def read_stable_bytes(path: Path, attempts: int = 5, pause: float = 0.2) -> bytes:
+    """Lee un archivo que puede estar siendo actualizado y exige una instantánea estable."""
+    last_error: Exception | None = None
+    for _ in range(attempts):
+        try:
+            before = path.stat()
+            content = path.read_bytes()
+            after = path.stat()
+        except (OSError, FileNotFoundError) as exc:
+            last_error = exc
+            time.sleep(pause)
+            continue
+        if (
+            before.st_size == after.st_size == len(content)
+            and before.st_mtime_ns == after.st_mtime_ns
+        ):
+            return content
+        time.sleep(pause)
+    detail = f": {last_error}" if last_error else ""
+    raise AppError(
+        f"No se pudo obtener una instantánea estable de {path} después de {attempts} intentos{detail}"
+    )
+
+
 def parse_prefs_js(profile: Path) -> dict[str, Any]:
     prefs_file = profile / "prefs.js"
     prefs: dict[str, Any] = {}
     try:
-        lines = prefs_file.read_text(encoding="utf-8", errors="replace").splitlines()
+        lines = read_stable_bytes(prefs_file).decode(
+            "utf-8", errors="replace"
+        ).splitlines()
     except OSError as exc:
         raise AppError(f"No se pudo leer {prefs_file}: {exc}") from exc
 
@@ -320,6 +350,97 @@ def parse_prefs_js(profile: Path) -> dict[str, Any]:
             continue
         prefs[key] = value
     return prefs
+
+
+def stable_copy_file(source: Path, destination: Path, attempts: int = 5, pause: float = 0.2) -> None:
+    """Copia un archivo solo cuando no cambia durante la operación."""
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    last_error: Exception | None = None
+    for _ in range(attempts):
+        try:
+            before = source.stat()
+            shutil.copy2(source, destination)
+            after = source.stat()
+            copied = destination.stat()
+        except (OSError, FileNotFoundError) as exc:
+            last_error = exc
+            time.sleep(pause)
+            continue
+        if (
+            before.st_size == after.st_size == copied.st_size
+            and before.st_mtime_ns == after.st_mtime_ns
+        ):
+            return
+        time.sleep(pause)
+    detail = f": {last_error}" if last_error else ""
+    raise AppError(
+        f"No se pudo copiar de forma estable {source} después de {attempts} intentos{detail}"
+    )
+
+
+def maildir_signature(root: Path) -> tuple[tuple[str, int, int], ...]:
+    signature: list[tuple[str, int, int]] = []
+    for folder_name in ("cur", "new"):
+        folder = root / folder_name
+        if not folder.is_dir():
+            continue
+        for path in sorted(folder.iterdir(), key=lambda item: item.name):
+            if not path.is_file():
+                continue
+            try:
+                stat = path.stat()
+            except FileNotFoundError:
+                continue
+            signature.append((str(path.relative_to(root)), stat.st_size, stat.st_mtime_ns))
+    return tuple(signature)
+
+
+def stable_copy_maildir(source: Path, destination: Path, attempts: int = 5, pause: float = 0.2) -> None:
+    """Crea una instantánea estable de un Maildir sin bloquear Thunderbird."""
+    last_error: Exception | None = None
+    for _ in range(attempts):
+        try:
+            before = maildir_signature(source)
+            if destination.exists():
+                shutil.rmtree(destination)
+            destination.mkdir(parents=True, exist_ok=True)
+            for folder_name in ("cur", "new", "tmp"):
+                src_folder = source / folder_name
+                dst_folder = destination / folder_name
+                if src_folder.is_dir():
+                    shutil.copytree(src_folder, dst_folder)
+                else:
+                    dst_folder.mkdir(parents=True, exist_ok=True)
+            after = maildir_signature(source)
+        except (OSError, FileNotFoundError) as exc:
+            last_error = exc
+            time.sleep(pause)
+            continue
+        if before == after:
+            return
+        time.sleep(pause)
+    detail = f": {last_error}" if last_error else ""
+    raise AppError(
+        f"No se pudo copiar de forma estable el Maildir {source} después de {attempts} intentos{detail}"
+    )
+
+
+def snapshot_template_stores(
+    stores: Iterable[tuple[str, Path]], snapshot_root: Path
+) -> list[tuple[str, Path]]:
+    """Copia los almacenes de plantillas a una instantánea local de solo lectura."""
+    snapshots: list[tuple[str, Path]] = []
+    for index, (kind, source) in enumerate(stores, start=1):
+        if kind == "mbox":
+            destination = snapshot_root / f"templates-{index}.mbox"
+            stable_copy_file(source, destination)
+        elif kind == "maildir":
+            destination = snapshot_root / f"templates-{index}.maildir"
+            stable_copy_maildir(source, destination)
+        else:
+            raise AppError(f"Tipo de almacén no soportado: {kind}")
+        snapshots.append((kind, destination))
+    return snapshots
 
 
 def discover_template_stores(profile: Path, explicit: Path | None = None) -> list[tuple[str, Path]]:
@@ -552,18 +673,22 @@ def atomic_write_bytes(path: Path, content: bytes) -> None:
 
 
 def prepare_state(profile_arg: Path | None, templates_path_arg: Path | None) -> None:
-    if thunderbird_is_running():
-        raise AppError(
-            "Thunderbird está abierto. Ciérrelo por completo antes de ejecutar --preparar; "
-            "la preparación lee directamente su perfil y sus plantillas."
-        )
-
     profile = discover_thunderbird_profile(profile_arg)
     stores = discover_template_stores(profile, templates_path_arg)
-    templates = extract_templates(stores)
-    smtp = discover_smtp_settings(profile, templates)
 
     STATE_DIR.mkdir(parents=True, exist_ok=True)
+    snapshot_root = STATE_DIR / ".preparacion-temporal"
+    if snapshot_root.exists():
+        shutil.rmtree(snapshot_root)
+    snapshot_root.mkdir(parents=True, exist_ok=True)
+
+    try:
+        snapshot_stores = snapshot_template_stores(stores, snapshot_root)
+        templates = extract_templates(snapshot_stores)
+        smtp = discover_smtp_settings(profile, templates)
+    finally:
+        shutil.rmtree(snapshot_root, ignore_errors=True)
+
     TEMPLATES_DIR.mkdir(parents=True, exist_ok=True)
     for code, candidate in templates.items():
         cache_path = TEMPLATES_DIR / TEMPLATE_CACHE_NAMES[code]
@@ -573,6 +698,10 @@ def prepare_state(profile_arg: Path | None, templates_path_arg: Path | None) -> 
     atomic_write_bytes(SMTP_STATE_FILE, smtp_payload)
 
     print(f"Perfil Thunderbird: {profile}")
+    if thunderbird_is_running():
+        print("Thunderbird permanece abierto: se utilizó una instantánea de solo lectura.")
+    else:
+        print("Thunderbird no estaba abierto: se utilizó igualmente una instantánea de solo lectura.")
     print("Plantillas preparadas:")
     for code, candidate in templates.items():
         names = ", ".join(attachment_names(candidate.message))

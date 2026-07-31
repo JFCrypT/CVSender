@@ -1,0 +1,21 @@
+# Python
+__pycache__/
+*.py[cod]
+
+# Configuración local y credenciales
+.env
+.env.*
+!.env.example
+
+# Visual Studio Code
+.vscode/
+*.code-workspace
+
+# CSV generados durante el uso
+# Se conserva únicamente el archivo de ejemplo del repositorio.
+/*.csv
+!/resultados_ejemplo.csv
+
+# Estado local de CVSender:
+# configuración SMTP, copias de plantillas, mensajes e historial
+/CVSender_state/
