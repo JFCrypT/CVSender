@@ -1,20 +1,18 @@
 # CVSender
 
-**CVSender** es una herramienta local en Python para automatizar el envío individual de currículums a partir de un archivo CSV generado por el asistente de búsqueda laboral.
+**CVSender** es una herramienta local en Python para automatizar el envío individual de currículums a partir de un archivo CSV generado por un asistente de búsqueda laboral.
 
-El proyecto reutiliza plantillas ya creadas en Thunderbird, conserva su asunto, cuerpo, firma y archivos adjuntos, selecciona automáticamente la plantilla correcta según el campo `idioma_recomendado` y envía un mensaje separado a cada destinatario mediante SMTP.
+La aplicación reutiliza plantillas guardadas en Thunderbird, conserva su asunto, cuerpo, firma y archivos adjuntos, selecciona automáticamente la plantilla correcta mediante el campo `idioma_recomendado` y envía un mensaje independiente a cada destinatario por SMTP.
 
-Repositorio previsto:
+Repositorio:
 
-```text
-https://github.com/JFCrypT/CVSender
-```
+<https://github.com/JFCrypT/CVSender>
 
 ---
 
 ## Objetivo
 
-Automatizar esta etapa del flujo de búsqueda laboral:
+CVSender automatiza la etapa de envío dentro de este flujo:
 
 ```text
 Asistente de búsqueda laboral
@@ -23,31 +21,34 @@ Asistente de búsqueda laboral
             ↓
          CVSender
             ↓
-Plantilla Thunderbird correspondiente
+Selección de plantilla Thunderbird
             ↓
- Envío individual por correo electrónico
+ Envío individual mediante SMTP
             ↓
- Registro y archivo de cada mensaje
+ Registro histórico y archivo EML
 ```
 
-CVSender no busca empleos, no modifica el currículum y no genera el contenido del correo. Su responsabilidad es tomar el CSV ya validado, seleccionar la plantilla correspondiente y realizar los envíos.
+CVSender no busca empleos, no modifica el currículum y no redacta el contenido del correo. Su responsabilidad es recibir un CSV ya validado, seleccionar la plantilla correspondiente y efectuar los envíos.
 
 ---
 
 ## Características
 
-- Lee el CSV UTF-8 generado por el asistente.
-- Valida el encabezado y todos los campos antes del primer envío.
-- Procesa todas las filas válidas del archivo.
+- Lee archivos CSV UTF-8.
+- Valida íntegramente el CSV antes del primer envío.
+- Procesa todas las filas válidas.
 - Selecciona automáticamente una de tres plantillas de Thunderbird.
-- Conserva asunto, cuerpo, firma y adjuntos de la plantilla.
+- Conserva asunto, cuerpo, firma y archivos adjuntos.
 - Envía un correo independiente a cada dirección.
-- Genera mensajes `.eml` antes de enviarlos.
+- Genera una copia `.eml` de cada mensaje.
 - Incluye un modo `dry-run` que no conecta al servidor SMTP.
-- Registra envíos correctos y errores en un CSV histórico.
-- Detecta direcciones duplicadas dentro del mismo archivo.
+- Mantiene un historial acumulativo en `envios.csv`.
+- Registra envíos correctos y errores.
+- Detecta direcciones duplicadas dentro del mismo CSV.
+- Permite configurar la pausa entre mensajes.
 - No requiere paquetes externos de Python.
-- No almacena la contraseña SMTP en el código ni en el CSV.
+- No requiere un entorno virtual.
+- No guarda la contraseña SMTP.
 
 ---
 
@@ -68,7 +69,13 @@ Cada plantilla debe contener:
 - La firma.
 - El currículum correspondiente como archivo adjunto.
 
-CVSender toma el mensaje completo de Thunderbird y solo reemplaza el destinatario, la fecha y el identificador del mensaje.
+CVSender toma el mensaje completo de Thunderbird y reemplaza únicamente los datos necesarios para el nuevo envío, como el destinatario, la fecha y el identificador del mensaje.
+
+Cuando se modifica el texto, la firma o los adjuntos de una plantilla en Thunderbird, debe repetirse:
+
+```bash
+python3 cvsender.py --preparar
+```
 
 ---
 
@@ -89,14 +96,43 @@ organizacion_o_reparticion,puesto_o_area_recomendada,idioma_recomendado,correo,r
 "Universidad","Criptografía y Seguridad Informática","español-académico","docencia@example.edu.ar","Enviar CV directamente."
 ```
 
-El script utiliza principalmente:
+CVSender utiliza principalmente:
 
-- `correo`: destinatario.
+- `correo`: dirección destinataria.
 - `idioma_recomendado`: selección de la plantilla.
 
 Las demás columnas se conservan en el registro histórico para archivar el contexto completo de cada postulación.
 
 Todas las filas válidas se procesan. No existe una columna de autorización.
+
+---
+
+## Generación del CSV con el Prompt Maestro Genérico
+
+El repositorio incluye un prompt reutilizable para generar resultados compatibles con CVSender:
+
+[Prompt Maestro Genérico](docs/Prompt%20Maestro%20Gen%C3%A9rico.md)
+
+El prompt está diseñado para utilizarse en un asistente con capacidad de búsqueda web. Cuando se selecciona la modalidad **CORREOS**, produce:
+
+1. Una tabla visible con los destinos encontrados.
+2. Un bloque CSV UTF-8 que refleja exactamente esa tabla.
+3. Los valores normalizados de `idioma_recomendado` que CVSender utiliza para seleccionar la plantilla de Thunderbird.
+
+El archivo generado debe guardarse dentro de la carpeta del proyecto, por ejemplo:
+
+```text
+/ruta/a/CVSender/resultados.csv
+```
+
+Después puede validarse y procesarse con:
+
+```bash
+python3 cvsender.py resultados.csv --dry-run
+python3 cvsender.py resultados.csv
+```
+
+El prompt es un recurso complementario. CVSender no lo ejecuta, no realiza búsquedas laborales y no genera por sí mismo el archivo CSV.
 
 ---
 
@@ -106,11 +142,18 @@ Todas las filas válidas se procesan. No existe una columna de autorización.
 - Python 3.11 o posterior.
 - Thunderbird configurado.
 - Las tres plantillas guardadas en Thunderbird.
-- Thunderbird puede permanecer abierto durante la preparación y los envíos.
 - Acceso SMTP a la cuenta remitente.
 - Contraseña SMTP o contraseña de aplicación compatible.
 
 No se requieren dependencias instaladas mediante `pip`.
+
+Verificación:
+
+```bash
+python3 --version
+```
+
+No hace falta crear un entorno virtual porque CVSender utiliza únicamente la biblioteca estándar de Python.
 
 ---
 
@@ -121,13 +164,15 @@ CVSender/
 ├── cvsender.py
 ├── resultados_ejemplo.csv
 ├── README.md
-└── .gitignore
+├── .gitignore
+└── docs/
+    └── Prompt Maestro Genérico.md
 ```
 
-CVSender guarda todo su estado operativo dentro de la carpeta del proyecto:
+CVSender guarda su estado operativo dentro de la carpeta del proyecto:
 
 ```text
-/home/jfcrypt/Documents/Proyectos/CVSender/CVSender_state/
+/ruta/a/CVSender/CVSender_state/
 ├── plantillas/
 │   ├── ingles.eml
 │   ├── espanol-industrial.eml
@@ -141,7 +186,19 @@ CVSender guarda todo su estado operativo dentro de la carpeta del proyecto:
 └── envios.csv
 ```
 
-El archivo `.gitignore` excluye `CVSender_state/`, la configuración local, los espacios de trabajo de Visual Studio Code y todos los CSV generados, excepto `resultados_ejemplo.csv`. Por lo tanto, la configuración SMTP, las copias locales de las plantillas, los mensajes `.eml`, el historial de envíos y los resultados reales no se publican en GitHub.
+El archivo `.gitignore` excluye:
+
+- `CVSender_state/`.
+- La configuración local.
+- Las copias de las plantillas.
+- Los mensajes `.eml`.
+- El historial de envíos.
+- Los CSV reales generados.
+- `.vscode/`.
+- Los archivos `*.code-workspace`.
+- Los archivos `.env`.
+
+Se conserva únicamente `resultados_ejemplo.csv`.
 
 ---
 
@@ -150,55 +207,60 @@ El archivo `.gitignore` excluye `CVSender_state/`, la configuración local, los 
 La ubicación prevista es:
 
 ```text
-/home/jfcrypt/Documents/Proyectos/CVSender/
+/ruta/a/CVSender/
 ```
 
 Todos los comandos de este README parten de esa carpeta:
 
 ```bash
-cd "/home/jfcrypt/Documents/Proyectos/CVSender"
+cd "/ruta/a/CVSender"
 ```
 
-Todos los archivos generados por la aplicación permanecen dentro de esa carpeta, bajo `CVSender_state/`. CVSender no utiliza `~/.local/share/` ni otra ubicación externa al proyecto.
+Todos los archivos generados por la aplicación permanecen dentro de esa carpeta, bajo `CVSender_state/`.
 
 ---
 
 ## Preparación inicial
 
-Thunderbird puede permanecer abierto. Ejecute:
+Thunderbird puede permanecer abierto.
 
 ```bash
-cd "/home/jfcrypt/Documents/Proyectos/CVSender"
+cd "/ruta/a/CVSender"
 
 python3 cvsender.py --preparar
 ```
 
-Durante esta preparación, CVSender:
+Durante la preparación, CVSender:
 
 1. Detecta el perfil activo de Thunderbird.
 2. Localiza la carpeta `Templates` o `Plantillas`.
-3. Crea dentro de `CVSender_state/` una instantánea temporal de solo lectura.
-4. Si Thunderbird modifica el almacén mientras se copia, descarta la copia y vuelve a intentarlo.
+3. Crea una instantánea temporal de solo lectura.
+4. Reintenta si Thunderbird modifica el almacén mientras se copia.
 5. Localiza las tres plantillas por su asunto exacto.
 6. Verifica que cada plantilla tenga al menos un PDF adjunto.
 7. Copia las plantillas definitivas a `CVSender_state/plantillas/`.
-8. Lee la configuración SMTP del perfil mediante una lectura estable.
+8. Lee la configuración SMTP del perfil.
 9. Guarda la configuración SMTP sin almacenar contraseñas.
 10. Elimina la instantánea temporal.
 
-CVSender no bloquea, modifica ni cierra Thunderbird. La preparación debe repetirse cuando se modifique una plantilla o cambie la configuración SMTP.
+CVSender no bloquea, modifica ni cierra Thunderbird.
+
+La preparación debe repetirse cuando:
+
+- Se modifica una plantilla.
+- Se reemplaza un archivo adjunto.
+- Cambia la cuenta remitente.
+- Cambia la configuración SMTP.
 
 ### Perfil o carpeta de plantillas manual
 
 ```bash
-cd "/home/jfcrypt/Documents/Proyectos/CVSender"
+cd "/ruta/a/CVSender"
 
 python3 cvsender.py --preparar \
   --profile "/ruta/al/perfil" \
   --templates-path "/ruta/al/archivo/Templates"
 ```
-
-Thunderbird puede seguir utilizándose durante y después de la preparación.
 
 ---
 
@@ -207,7 +269,7 @@ Thunderbird puede seguir utilizándose durante y después de la preparación.
 Antes de realizar envíos reales:
 
 ```bash
-cd "/home/jfcrypt/Documents/Proyectos/CVSender"
+cd "/ruta/a/CVSender"
 
 python3 cvsender.py resultados.csv --dry-run
 ```
@@ -217,31 +279,49 @@ Este modo:
 - Valida el CSV completo.
 - Selecciona la plantilla de cada fila.
 - Genera los mensajes `.eml`.
+- Registra el estado `GENERADO`.
 - No abre una conexión SMTP.
 - No envía correos.
+- No crea borradores en Thunderbird.
+- No modifica las plantillas originales.
 
 Los mensajes generados quedan en:
 
 ```text
-/home/jfcrypt/Documents/Proyectos/CVSender/CVSender_state/archivo_eml/dry-run/
+/ruta/a/CVSender/CVSender_state/archivo_eml/dry-run/
 ```
+
+El estado `GENERADO` significa que el mensaje fue construido y archivado correctamente, pero no enviado.
 
 ---
 
 ## Envío real
 
 ```bash
-cd "/home/jfcrypt/Documents/Proyectos/CVSender"
+cd "/ruta/a/CVSender"
 
 python3 cvsender.py resultados.csv
 ```
 
-CVSender solicitará la contraseña SMTP de forma oculta y enviará todas las filas válidas, una por una.
+CVSender solicita la contraseña SMTP de forma oculta y envía todas las filas válidas, una por una.
+
+La pausa predeterminada entre mensajes es de **10 segundos**.
+
+### Contraseña de aplicación
+
+Cuando Thunderbird utiliza OAuth2, CVSender no puede reutilizar el token almacenado por Thunderbird. En ese caso, debe utilizarse una contraseña de aplicación proporcionada por el proveedor de correo.
+
+Una contraseña de aplicación:
+
+- No es un OTP.
+- Puede reutilizarse en ejecuciones posteriores.
+- Permanece válida hasta que sea revocada o invalidada por el proveedor.
+- No debe guardarse en el repositorio.
 
 ### Contraseña mediante variable de entorno
 
 ```bash
-cd "/home/jfcrypt/Documents/Proyectos/CVSender"
+cd "/ruta/a/CVSender"
 
 export CVSENDER_SMTP_PASSWORD='CONTRASEÑA_O_CONTRASEÑA_DE_APLICACIÓN'
 python3 cvsender.py resultados.csv
@@ -254,7 +334,28 @@ La contraseña no se guarda en:
 - El CSV de entrada.
 - Las plantillas.
 - Los archivos `.eml`.
+- `smtp.json`.
 - El registro histórico.
+
+---
+
+## Pausa entre envíos
+
+La pausa predeterminada es de diez segundos.
+
+Puede modificarse para una ejecución concreta:
+
+```bash
+python3 cvsender.py resultados.csv --delay 20
+```
+
+Sin pausa:
+
+```bash
+python3 cvsender.py resultados.csv --delay 0
+```
+
+Una pausa mayor puede reducir rechazos temporales cuando se envían numerosos mensajes semejantes o varios destinatarios pertenecen al mismo dominio.
 
 ---
 
@@ -263,8 +364,10 @@ La contraseña no se guarda en:
 Cada ejecución agrega información a:
 
 ```text
-/home/jfcrypt/Documents/Proyectos/CVSender/CVSender_state/envios.csv
+/ruta/a/CVSender/CVSender_state/envios.csv
 ```
+
+`envios.csv` funciona como historial acumulativo: no se reemplaza en cada ejecución. Las nuevas filas se agregan al final.
 
 El registro conserva:
 
@@ -281,9 +384,34 @@ El registro conserva:
 
 Estados posibles:
 
-- `GENERADO`: creado mediante `--dry-run`.
+- `GENERADO`: creado mediante `--dry-run`, sin envío SMTP.
 - `ENVIADO`: aceptado por el servidor SMTP.
 - `ERROR`: no pudo generarse o enviarse.
+
+`envios.csv` contiene toda la información de `resultados.csv` y agrega los datos operativos del procesamiento. Por ello, puede utilizarse como histórico principal.
+
+El archivo `resultados.csv` puede tratarse como entrada temporal, pero conviene conservarlo hasta confirmar que todas las filas fueron enviadas o registradas correctamente.
+
+---
+
+## Archivo de mensajes EML
+
+CVSender conserva una copia exacta de cada mensaje generado:
+
+```text
+CVSender_state/archivo_eml/
+```
+
+Subcarpetas:
+
+- `dry-run/`: mensajes creados sin envío.
+- `pendientes/`: mensajes preparados antes del intento SMTP.
+- `enviados/`: mensajes aceptados por SMTP.
+- `errores/`: mensajes cuyo envío falló.
+
+CVSender no escribe directamente en los archivos internos de Thunderbird.
+
+El proveedor de correo puede guardar automáticamente los mensajes enviados por SMTP en la carpeta `Sent` o `Enviados` del servidor. Cuando eso ocurre, Thunderbird los muestra al sincronizar. Este comportamiento depende del proveedor.
 
 ---
 
@@ -298,10 +426,10 @@ Antes del primer envío, CVSender comprueba:
 - Que `idioma_recomendado` use uno de los tres valores admitidos.
 - Que las tres plantillas estén disponibles.
 - Que cada plantilla incluya un PDF adjunto.
-- Que el remitente de las plantillas coincida con la configuración SMTP.
-- Que no existan direcciones duplicadas en el mismo CSV.
+- Que el remitente coincida con la configuración SMTP.
+- Que no existan direcciones duplicadas dentro del mismo CSV.
 
-Si alguna fila no supera la validación, se cancela toda la ejecución antes de enviar el primer correo.
+Si alguna fila no supera la validación, la ejecución se cancela antes de enviar el primer correo.
 
 ---
 
@@ -312,9 +440,40 @@ De forma predeterminada, una dirección repetida dentro del mismo CSV produce un
 Para permitir duplicados deliberadamente:
 
 ```bash
-cd "/home/jfcrypt/Documents/Proyectos/CVSender"
+cd "/ruta/a/CVSender"
 
 python3 cvsender.py resultados.csv --permitir-duplicados
+```
+
+La detección de duplicados se aplica al CSV de la ejecución actual. No impide volver a enviar una dirección que ya aparece en `envios.csv`.
+
+---
+
+## Reintento de errores
+
+Un error individual no detiene las filas restantes.
+
+El procedimiento recomendado es:
+
+1. Revisar `CVSender_state/envios.csv`.
+2. Identificar las filas con estado `ERROR`.
+3. Crear manualmente un CSV nuevo que contenga únicamente esas filas.
+4. Esperar un intervalo razonable.
+5. Reenviar solo el CSV reducido.
+
+Ejemplo:
+
+```bash
+python3 cvsender.py resultados_reintento.csv
+```
+
+No debe repetirse el CSV completo si parte de sus destinatarios ya fue enviada correctamente, porque esos mensajes se enviarían nuevamente.
+
+El historial conservará ambos eventos:
+
+```text
+primer intento  → ERROR
+segundo intento → ENVIADO
 ```
 
 ---
@@ -322,23 +481,9 @@ python3 cvsender.py resultados.csv --permitir-duplicados
 ## Opciones disponibles
 
 ```bash
-cd "/home/jfcrypt/Documents/Proyectos/CVSender"
+cd "/ruta/a/CVSender"
 
 python3 cvsender.py --help
-```
-
-### Modificar la pausa entre envíos
-
-La pausa predeterminada es de 10 segundos.
-
-```bash
-python3 cvsender.py resultados.csv --delay 5
-```
-
-Sin pausa:
-
-```bash
-python3 cvsender.py resultados.csv --delay 0
 ```
 
 ### Sobrescribir la configuración SMTP
@@ -365,18 +510,19 @@ ssl
 python3 cvsender.py resultados.csv --debug-smtp
 ```
 
-Este modo puede mostrar metadatos de la conversación SMTP. No muestra la contraseña.
+Este modo puede mostrar metadatos de la conversación SMTP, pero no muestra la contraseña.
 
 ---
 
 ## Comportamiento ante errores
 
 - Un CSV inválido cancela la ejecución antes del primer envío.
-- Cada mensaje se archiva antes de conectarse al destinatario.
+- Cada mensaje se archiva antes del intento SMTP.
 - Un error individual no detiene las filas restantes.
 - Los mensajes aceptados por SMTP se mueven a `enviados`.
 - Los mensajes rechazados se mueven a `errores`.
 - El proceso devuelve un código distinto de cero cuando existe al menos un error.
+- CVSender no reintenta automáticamente los mensajes rechazados.
 
 ---
 
@@ -384,18 +530,19 @@ Este modo puede mostrar metadatos de la conversación SMTP. No muestra la contra
 
 CVSender:
 
-- No intenta controlar gráficamente Thunderbird.
+- No controla gráficamente Thunderbird.
 - No exige cerrar Thunderbird.
 - Lee el perfil mediante instantáneas temporales de solo lectura.
 - No extrae contraseñas guardadas en Thunderbird.
+- No extrae tokens OAuth2.
 - No guarda credenciales.
 - No modifica las plantillas originales.
 - No envía mensajes en copia masiva.
 - No agrega destinatarios adicionales.
-- No utiliza servicios externos.
-- No depende de APIs de terceros.
+- No depende de APIs laborales externas.
+- Utiliza únicamente la biblioteca estándar de Python.
 
-Si Thunderbird utiliza OAuth2, CVSender no reutiliza ni extrae sus tokens. La cuenta debe admitir una contraseña SMTP, una contraseña de aplicación u otro método compatible con el servidor.
+Los archivos sensibles y operativos se encuentran bajo `CVSender_state/`, que está excluido mediante `.gitignore`.
 
 ---
 
@@ -405,9 +552,12 @@ Si Thunderbird utiliza OAuth2, CVSender no reutiliza ni extrae sus tokens. La cu
 - El encabezado del CSV es estricto.
 - No modifica el cuerpo del mensaje para cada organización.
 - No personaliza el asunto por destinatario.
-- No reemplaza los archivos adjuntos definidos en la plantilla.
-- No sincroniza automáticamente los mensajes con la carpeta `Enviados` de Thunderbird.
-- El envío depende de que el proveedor permita autenticación SMTP compatible.
+- No reemplaza automáticamente los archivos adjuntos definidos en la plantilla.
+- No guarda por sí mismo los mensajes en la carpeta `Sent` de Thunderbird.
+- No reutiliza los tokens OAuth2 de Thunderbird.
+- No reintenta automáticamente los errores.
+- No evita duplicados comparando contra el historial completo.
+- El envío depende de que el proveedor admita autenticación SMTP compatible.
 
 ---
 
