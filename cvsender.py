@@ -6,7 +6,7 @@ Flujo:
        python3 cvsender.py --preparar
   2. Probar sin enviar:
        python3 cvsender.py resultados.csv --dry-run
-  3. Enviar todas las filas válidas:
+  3. Enviar todas las filas válidas hasta que SMTP acepte cada una:
        python3 cvsender.py resultados.csv
 
 No requiere paquetes externos. Compatible con Python 3.11+.
@@ -181,7 +181,10 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         "--retry-wait",
         type=float,
         default=60.0,
-        help="Espera antes del único reintento de un fallo temporal (predeterminado: 60)",
+        help=(
+            "Espera entre reintentos sucesivos hasta que SMTP acepte el mensaje "
+            "(predeterminado: 60)"
+        ),
     )
     parser.add_argument(
         "--delay",
@@ -998,63 +1001,6 @@ def exception_detail(exc: BaseException) -> str:
     return f"{type(exc).__name__}: {exc}"
 
 
-def smtp_response_codes(exc: BaseException) -> list[int]:
-    if isinstance(exc, smtplib.SMTPRecipientsRefused):
-        return [int(response[0]) for response in exc.recipients.values()]
-    if isinstance(exc, smtplib.SMTPResponseException):
-        return [int(exc.smtp_code)]
-    return []
-
-
-def is_fatal_smtp_error(exc: BaseException) -> bool:
-    """Errores que hacen inútil continuar con el lote completo."""
-    return isinstance(
-        exc,
-        (
-            AppError,
-            smtplib.SMTPAuthenticationError,
-            smtplib.SMTPNotSupportedError,
-        ),
-    )
-
-
-def is_retryable_send_error(exc: BaseException) -> bool:
-    """Clasifica fallos temporales que admiten un único reintento."""
-    if is_fatal_smtp_error(exc):
-        return False
-
-    if isinstance(
-        exc,
-        (
-            TimeoutError,
-            ConnectionError,
-            BrokenPipeError,
-            smtplib.SMTPServerDisconnected,
-        ),
-    ):
-        return True
-
-    codes = smtp_response_codes(exc)
-    if codes and all(400 <= code < 500 for code in codes):
-        return True
-
-    if isinstance(exc, smtplib.SMTPResponseException):
-        message = exc.smtp_error
-        decoded = (
-            message.decode("utf-8", errors="replace")
-            if isinstance(message, bytes)
-            else str(message)
-        )
-        if exc.smtp_code == 554 and "6.6.0" in decoded:
-            return True
-
-    # SMTPException hereda de OSError: no debe convertir todos los 5xx en temporales.
-    if isinstance(exc, smtplib.SMTPException):
-        return False
-
-    # OSError restante cubre fallos de socket, conexión reseteada y red temporal.
-    return isinstance(exc, OSError)
-
 
 def sleep_random_interval(minimum: float, maximum: float) -> float:
     duration = random.uniform(minimum, maximum)
@@ -1208,22 +1154,23 @@ def send_entries(args: argparse.Namespace) -> int:
         connection = SmtpConnection(smtp, password, args.timeout, args.debug_smtp)
         print(f"SMTP: {smtp.host}:{smtp.port} ({smtp.security})")
         print(
-            "Pausa entre mensajes: "
+            "Pausa entre mensajes aceptados: "
             f"aleatoria entre {args.delay_min:g} y {args.delay_max:g} segundos"
         )
-        print(f"Espera antes de reintento temporal: {args.retry_wait:g} segundos")
+        print(
+            "Política de fallos: reintento ilimitado del mismo mensaje, con reconexión "
+            f"y espera de {args.retry_wait:g} segundos entre intentos."
+        )
+        print(
+            "La ejecución solo finaliza normalmente cuando SMTP aceptó todas las filas. "
+            "Use Ctrl+C para interrumpirla manualmente."
+        )
     else:
         print("Modo dry-run: no se establecerá conexión SMTP.")
 
     success = 0
     failures = 0
     try:
-        if connection is not None:
-            try:
-                connection.connect()
-            except (smtplib.SMTPException, OSError, AppError) as exc:
-                raise AppError(f"No se pudo iniciar la sesión SMTP: {exc}") from exc
-
         for index, entry in enumerate(entries, start=1):
             template = templates[entry.idioma_recomendado]
             subject = TEMPLATE_SUBJECTS[entry.idioma_recomendado]
@@ -1252,84 +1199,66 @@ def send_entries(args: argparse.Namespace) -> int:
                 continue
 
             assert connection is not None
-            first_error: BaseException | None = None
-            final_status = "ENVIADO"
-            final_detail = "SMTP aceptó el mensaje"
-            sent = False
+            attempt = 0
+            first_error_detail = ""
+            last_error_detail = ""
 
-            try:
-                connection.send(message, entry.correo)
-                sent = True
-            except (smtplib.SMTPException, OSError, AppError) as exc:
-                first_error = exc
-                if is_fatal_smtp_error(exc):
-                    raise AppError(
-                        f"Fallo SMTP fatal durante el envío a {entry.correo}: "
-                        f"{exception_detail(exc)}"
-                    ) from exc
+            while True:
+                attempt += 1
+                try:
+                    # send() abre la conexión si está cerrada. La misma contraseña permanece
+                    # únicamente en memoria durante toda la ejecución.
+                    connection.send(message, entry.correo)
+                    break
+                except (smtplib.SMTPException, OSError, AppError) as exc:
+                    current_detail = exception_detail(exc)
+                    if not first_error_detail:
+                        first_error_detail = current_detail
+                    last_error_detail = current_detail
+                    connection.close()
 
-                connection.close()
-                if is_retryable_send_error(exc):
+                    eprint(
+                        f"[{index}/{len(entries)}] INTENTO {attempt} FALLIDO: "
+                        f"{entry.correo}: {current_detail}"
+                    )
                     print(
-                        f"[{index}/{len(entries)}] FALLO TEMPORAL: {entry.correo}: "
-                        f"{exception_detail(exc)}"
+                        f"Esperando {args.retry_wait:g} s, reconectando y reintentando "
+                        "el mismo mensaje..."
                     )
                     if args.retry_wait > 0:
-                        print(f"Esperando {args.retry_wait:g} s antes del único reintento...")
                         time.sleep(args.retry_wait)
 
-                    try:
-                        connection.connect()
-                        connection.send(message, entry.correo)
-                        sent = True
-                        final_status = "ENVIADO_TRAS_REINTENTO"
-                        final_detail = (
-                            f"Primer intento: {exception_detail(first_error)}. "
-                            "Reintento: SMTP aceptó el mensaje"
-                        )
-                    except (smtplib.SMTPException, OSError, AppError) as retry_exc:
-                        connection.close()
-                        if is_fatal_smtp_error(retry_exc):
-                            raise AppError(
-                                f"Fallo SMTP fatal al reconectar o reintentar {entry.correo}: "
-                                f"{exception_detail(retry_exc)}"
-                            ) from retry_exc
-                        final_detail = (
-                            f"Primer intento: {exception_detail(first_error)}. "
-                            f"Reintento tras {args.retry_wait:g} segundos: "
-                            f"{exception_detail(retry_exc)}"
-                        )
-                else:
-                    final_detail = (
-                        f"Fallo permanente o no reintentable: {exception_detail(exc)}"
-                    )
-
-            if sent:
-                eml_path: Path | None = None
-                try:
-                    eml_path = archive_message(
-                        message, entry, args.archive_dir, category="enviados"
-                    )
-                except OSError as exc:
-                    final_detail += f"; no se pudo archivar el EML: {exc}"
-
-                append_log(
-                    args.log,
-                    entry,
-                    subject,
-                    final_status,
-                    final_detail,
-                    eml_path,
-                )
-                success += 1
-                print(
-                    f"[{index}/{len(entries)}] {final_status}: "
-                    f"{entry.correo} ← {subject}"
-                )
+            final_status = "ENVIADO" if attempt == 1 else "ENVIADO_TRAS_REINTENTO"
+            if attempt == 1:
+                final_detail = "SMTP aceptó el mensaje en el primer intento"
             else:
-                append_log(args.log, entry, subject, "ERROR", final_detail, None)
-                failures += 1
-                eprint(f"[{index}/{len(entries)}] ERROR: {entry.correo}: {final_detail}")
+                final_detail = (
+                    f"SMTP aceptó el mensaje tras {attempt} intentos. "
+                    f"Primer error: {first_error_detail}. "
+                    f"Último error previo: {last_error_detail}"
+                )
+
+            eml_path: Path | None = None
+            try:
+                eml_path = archive_message(
+                    message, entry, args.archive_dir, category="enviados"
+                )
+            except OSError as exc:
+                final_detail += f"; no se pudo archivar el EML: {exc}"
+
+            append_log(
+                args.log,
+                entry,
+                subject,
+                final_status,
+                final_detail,
+                eml_path,
+            )
+            success += 1
+            print(
+                f"[{index}/{len(entries)}] {final_status}: "
+                f"{entry.correo} ← {subject}"
+            )
 
             if index < len(entries):
                 sleep_random_interval(args.delay_min, args.delay_max)
@@ -1337,10 +1266,16 @@ def send_entries(args: argparse.Namespace) -> int:
         if connection is not None:
             connection.close()
 
-    print(f"Completado. Correctos: {success}. Errores: {failures}.")
+    if args.dry_run:
+        print(f"Dry-run completado. Generados: {success}. Errores locales: {failures}.")
+        result = 1 if failures else 0
+    else:
+        print(f"Completado. Todos los mensajes fueron aceptados por SMTP: {success}/{len(entries)}.")
+        result = 0
+
     print(f"Registro: {args.log.expanduser()}")
     print(f"Archivo EML: {args.archive_dir.expanduser()}")
-    return 1 if failures else 0
+    return result
 
 
 def main(argv: Sequence[str] | None = None) -> int:
